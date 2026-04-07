@@ -11,6 +11,7 @@ COPY . .
 ENV DB_PATH=/data/snippet-expander.db
 ENV NODE_ENV=production
 
-EXPOSE 3456
+# Railway sets PORT dynamically — the server reads process.env.PORT
+EXPOSE ${PORT:-3456}
 
 CMD ["node", "server.js"]

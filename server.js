@@ -415,7 +415,7 @@ app.delete("/api/teams/:teamId/snippets/:id", authMiddleware, (req, res) => {
 
 // ── Start ────────────────────────────────────────
 initDb().then(() => {
-  app.listen(PORT, () => {
-    console.log(`✂️  Snippet Expander backend running on http://localhost:${PORT}`);
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`✂️  Snippet Expander backend running on port ${PORT}`);
   });
 });
