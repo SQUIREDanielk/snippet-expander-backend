@@ -11,6 +11,9 @@ const crypto = require("crypto");
 
 const app = express();
 const PORT = process.env.PORT || 3456;
+
+// Health check — registered early so it always responds
+app.get("/health", (req, res) => res.json({ status: "ok" }));
 const JWT_SECRET = process.env.JWT_SECRET || "snippet-expander-dev-secret-change-me";
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, "data.db");
 
@@ -23,6 +26,12 @@ let db;
 
 async function initDb() {
   const SQL = await initSqlJs();
+
+  // Ensure the directory for DB_PATH exists
+  const dbDir = path.dirname(DB_PATH);
+  if (!fs.existsSync(dbDir)) {
+    fs.mkdirSync(dbDir, { recursive: true });
+  }
 
   if (fs.existsSync(DB_PATH)) {
     const buf = fs.readFileSync(DB_PATH);
@@ -123,9 +132,6 @@ function queryOne(sql, params = []) {
 function generateInviteCode() {
   return crypto.randomBytes(4).toString("hex"); // 8-char code like "a3f9b2c1"
 }
-
-// ── Health check ─────────────────────────────────
-app.get("/health", (req, res) => res.json({ status: "ok" }));
 
 // ── Middleware ────────────────────────────────────
 app.use(cors({
@@ -414,8 +420,12 @@ app.delete("/api/teams/:teamId/snippets/:id", authMiddleware, (req, res) => {
 });
 
 // ── Start ────────────────────────────────────────
+console.log(`Starting server... PORT=${PORT}, DB_PATH=${DB_PATH}`);
 initDb().then(() => {
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`✂️  Snippet Expander backend running on port ${PORT}`);
+    console.log(`Snippet Expander backend running on port ${PORT}`);
   });
+}).catch((err) => {
+  console.error("Failed to initialize:", err);
+  process.exit(1);
 });
