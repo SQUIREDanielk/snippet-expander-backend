@@ -8,8 +8,10 @@ const initSqlJs = require("sql.js");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { Resend } = require("resend");
 
 const app = express();
+const resend = new Resend(process.env.RESEND_API_KEY || "re_test_key");
 const PORT = process.env.PORT || 3456;
 
 // Health check — registered early so it always responds
@@ -107,6 +109,18 @@ async function initDb() {
     )
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      code TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      used INTEGER DEFAULT 0,
+      created_at INTEGER DEFAULT (strftime('%s','now') * 1000),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `);
+
   persist();
 }
 
@@ -185,6 +199,96 @@ app.post("/api/auth/login", async (req, res) => {
 
   const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: "30d" });
   res.json({ token, email });
+});
+
+// ── Password reset routes ────────────────────────
+
+// Request a password reset — sends a 6-digit code via email
+app.post("/api/auth/forgot-password", async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: "Email required" });
+
+  const user = queryOne("SELECT id, email FROM users WHERE email = ?", [email]);
+  if (!user) {
+    // Don't reveal whether the email exists
+    return res.json({ ok: true, message: "If that email exists, a reset code has been sent." });
+  }
+
+  // Generate a 6-digit code, valid for 15 minutes
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const expiresAt = Date.now() + 15 * 60 * 1000;
+
+  // Invalidate any previous unused codes for this user
+  db.run("UPDATE password_reset_tokens SET used = 1 WHERE user_id = ? AND used = 0", [user.id]);
+
+  // Store the new code
+  db.run(
+    "INSERT INTO password_reset_tokens (user_id, code, expires_at) VALUES (?, ?, ?)",
+    [user.id, code, expiresAt]
+  );
+  persist();
+
+  // Send the email via Resend
+  const fromAddress = process.env.RESEND_FROM_EMAIL || "Snippet Expander <onboarding@resend.dev>";
+  try {
+    await resend.emails.send({
+      from: fromAddress,
+      to: [user.email],
+      subject: "Your Snippet Expander password reset code",
+      html: `
+        <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto;">
+          <h2 style="color: #4f46e5;">Password Reset</h2>
+          <p>You requested a password reset for your Snippet Expander account.</p>
+          <p>Your reset code is:</p>
+          <div style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #4f46e5; background: #f3f4f6; padding: 16px; border-radius: 8px; text-align: center; margin: 16px 0;">
+            ${code}
+          </div>
+          <p>This code expires in <strong>15 minutes</strong>.</p>
+          <p style="color: #6b7280; font-size: 13px;">If you didn't request this, you can safely ignore this email.</p>
+        </div>
+      `,
+    });
+    console.log(`Password reset code sent to ${user.email}`);
+  } catch (err) {
+    console.error("Failed to send reset email:", err);
+    return res.status(500).json({ error: "Failed to send reset email. Please try again." });
+  }
+
+  res.json({ ok: true, message: "If that email exists, a reset code has been sent." });
+});
+
+// Verify code and set new password
+app.post("/api/auth/reset-password", async (req, res) => {
+  const { email, code, newPassword } = req.body;
+  if (!email || !code || !newPassword) {
+    return res.status(400).json({ error: "Email, code, and new password are required" });
+  }
+  if (newPassword.length < 6) {
+    return res.status(400).json({ error: "Password must be at least 6 characters" });
+  }
+
+  const user = queryOne("SELECT id FROM users WHERE email = ?", [email]);
+  if (!user) return res.status(400).json({ error: "Invalid reset request" });
+
+  const resetToken = queryOne(
+    "SELECT * FROM password_reset_tokens WHERE user_id = ? AND code = ? AND used = 0 AND expires_at > ?",
+    [user.id, code, Date.now()]
+  );
+  if (!resetToken) {
+    return res.status(400).json({ error: "Invalid or expired reset code" });
+  }
+
+  // Mark the code as used
+  db.run("UPDATE password_reset_tokens SET used = 1 WHERE id = ?", [resetToken.id]);
+
+  // Update the password
+  const hash = await bcrypt.hash(newPassword, 10);
+  db.run("UPDATE users SET password_hash = ? WHERE id = ?", [hash, user.id]);
+  persist();
+
+  // Return a fresh auth token so they're logged in immediately
+  const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: "30d" });
+  res.json({ ok: true, token, email });
 });
 
 // ── Personal snippet routes ──────────────────────
