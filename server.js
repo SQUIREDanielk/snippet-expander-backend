@@ -214,13 +214,16 @@ app.post("/api/auth/login", async (req, res) => {
 // Request a password reset — sends a 6-digit code via email
 app.post("/api/auth/forgot-password", async (req, res) => {
   const { email } = req.body;
+  console.log(`[forgot-password] Request for email: ${email}`);
   if (!email) return res.status(400).json({ error: "Email required" });
 
   const user = queryOne("SELECT id, email FROM users WHERE email = ?", [email]);
   if (!user) {
+    console.log(`[forgot-password] No user found for: ${email}`);
     // Don't reveal whether the email exists
     return res.json({ ok: true, message: "If that email exists, a reset code has been sent." });
   }
+  console.log(`[forgot-password] Found user ${user.id}, sending code...`);
 
   // Generate a 6-digit code, valid for 15 minutes
   const code = Math.floor(100000 + Math.random() * 900000).toString();
