@@ -107,6 +107,33 @@ async function initDb() {
     )
   `);
 
+  // ── Folder tables ───────────────────────────────
+  db.run(`
+    CREATE TABLE IF NOT EXISTS folders (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      created_at INTEGER DEFAULT (strftime('%s','now') * 1000),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS team_folders (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      created_by INTEGER NOT NULL,
+      created_at INTEGER DEFAULT (strftime('%s','now') * 1000),
+      FOREIGN KEY (team_id) REFERENCES teams(id),
+      FOREIGN KEY (created_by) REFERENCES users(id)
+    )
+  `);
+
+  // Add folder_id column to snippets if not present
+  try { db.run("ALTER TABLE snippets ADD COLUMN folder_id TEXT DEFAULT NULL"); } catch {}
+  try { db.run("ALTER TABLE team_snippets ADD COLUMN folder_id TEXT DEFAULT NULL"); } catch {}
+
   db.run(`
     CREATE TABLE IF NOT EXISTS password_reset_tokens (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -269,31 +296,66 @@ app.post("/api/auth/reset-password", async (req, res) => {
   res.json({ ok: true, token, email });
 });
 
+// ── Personal folder routes ──────────────────────
+
+app.get("/api/folders", authMiddleware, (req, res) => {
+  const rows = queryAll(
+    "SELECT id, name, created_at AS createdAt FROM folders WHERE user_id = ?",
+    [req.userId]
+  );
+  res.json(rows);
+});
+
+app.post("/api/folders", authMiddleware, (req, res) => {
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ error: "Folder name required" });
+  const id = crypto.randomUUID();
+  db.run("INSERT INTO folders (id, user_id, name) VALUES (?, ?, ?)", [id, req.userId, name]);
+  persist();
+  res.json({ id, name });
+});
+
+app.put("/api/folders/:id", authMiddleware, (req, res) => {
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ error: "Folder name required" });
+  db.run("UPDATE folders SET name = ? WHERE id = ? AND user_id = ?", [name, req.params.id, req.userId]);
+  persist();
+  res.json({ ok: true });
+});
+
+app.delete("/api/folders/:id", authMiddleware, (req, res) => {
+  // Unassign snippets from this folder first
+  db.run("UPDATE snippets SET folder_id = NULL WHERE folder_id = ? AND user_id = ?", [req.params.id, req.userId]);
+  db.run("DELETE FROM folders WHERE id = ? AND user_id = ?", [req.params.id, req.userId]);
+  persist();
+  res.json({ ok: true });
+});
+
 // ── Personal snippet routes ──────────────────────
 
 app.get("/api/snippets", authMiddleware, (req, res) => {
   const rows = queryAll(
-    "SELECT id, name, shortcut, html, text_content AS text, created_at AS createdAt, updated_at AS updatedAt FROM snippets WHERE user_id = ? AND deleted = 0",
+    "SELECT id, name, shortcut, html, text_content AS text, folder_id AS folderId, created_at AS createdAt, updated_at AS updatedAt FROM snippets WHERE user_id = ? AND deleted = 0",
     [req.userId]
   );
   res.json(rows);
 });
 
 app.put("/api/snippets", authMiddleware, (req, res) => {
-  const { id, name, shortcut, html, text, createdAt, updatedAt } = req.body;
+  const { id, name, shortcut, html, text, folderId, createdAt, updatedAt } = req.body;
   if (!id || !name || !shortcut) return res.status(400).json({ error: "Missing fields" });
 
   const existing = queryOne("SELECT id FROM snippets WHERE id = ? AND user_id = ?", [id, req.userId]);
 
   if (existing) {
     db.run(
-      "UPDATE snippets SET name = ?, shortcut = ?, html = ?, text_content = ?, updated_at = ?, deleted = 0 WHERE id = ? AND user_id = ?",
-      [name, shortcut, html || "", text || "", updatedAt, id, req.userId]
+      "UPDATE snippets SET name = ?, shortcut = ?, html = ?, text_content = ?, folder_id = ?, updated_at = ?, deleted = 0 WHERE id = ? AND user_id = ?",
+      [name, shortcut, html || "", text || "", folderId || null, updatedAt, id, req.userId]
     );
   } else {
     db.run(
-      "INSERT INTO snippets (id, user_id, name, shortcut, html, text_content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      [id, req.userId, name, shortcut, html || "", text || "", createdAt, updatedAt]
+      "INSERT INTO snippets (id, user_id, name, shortcut, html, text_content, folder_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [id, req.userId, name, shortcut, html || "", text || "", folderId || null, createdAt, updatedAt]
     );
   }
 
@@ -311,7 +373,7 @@ app.delete("/api/snippets/:id", authMiddleware, (req, res) => {
 app.post("/api/snippets/sync", authMiddleware, (req, res) => {
   const clientSnippets = req.body.snippets || [];
   const serverSnippets = queryAll(
-    "SELECT id, name, shortcut, html, text_content AS text, created_at AS createdAt, updated_at AS updatedAt, deleted FROM snippets WHERE user_id = ?",
+    "SELECT id, name, shortcut, html, text_content AS text, folder_id AS folderId, created_at AS createdAt, updated_at AS updatedAt, deleted FROM snippets WHERE user_id = ?",
     [req.userId]
   );
   const serverMap = new Map(serverSnippets.map(s => [s.id, s]));
@@ -320,13 +382,13 @@ app.post("/api/snippets/sync", authMiddleware, (req, res) => {
     const server = serverMap.get(s.id);
     if (!server) {
       db.run(
-        "INSERT INTO snippets (id, user_id, name, shortcut, html, text_content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        [s.id, req.userId, s.name, s.shortcut, s.html || "", s.text || "", s.createdAt, s.updatedAt]
+        "INSERT INTO snippets (id, user_id, name, shortcut, html, text_content, folder_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [s.id, req.userId, s.name, s.shortcut, s.html || "", s.text || "", s.folderId || null, s.createdAt, s.updatedAt]
       );
     } else if (s.updatedAt > server.updatedAt) {
       db.run(
-        "UPDATE snippets SET name = ?, shortcut = ?, html = ?, text_content = ?, updated_at = ? WHERE id = ? AND user_id = ?",
-        [s.name, s.shortcut, s.html || "", s.text || "", s.updatedAt, s.id, req.userId]
+        "UPDATE snippets SET name = ?, shortcut = ?, html = ?, text_content = ?, folder_id = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+        [s.name, s.shortcut, s.html || "", s.text || "", s.folderId || null, s.updatedAt, s.id, req.userId]
       );
     }
   }
@@ -334,7 +396,7 @@ app.post("/api/snippets/sync", authMiddleware, (req, res) => {
   persist();
 
   const merged = queryAll(
-    "SELECT id, name, shortcut, html, text_content AS text, created_at AS createdAt, updated_at AS updatedAt FROM snippets WHERE user_id = ? AND deleted = 0",
+    "SELECT id, name, shortcut, html, text_content AS text, folder_id AS folderId, created_at AS createdAt, updated_at AS updatedAt FROM snippets WHERE user_id = ? AND deleted = 0",
     [req.userId]
   );
   res.json(merged);
@@ -432,6 +494,58 @@ app.get("/api/teams/:teamId/members", authMiddleware, (req, res) => {
   res.json(members);
 });
 
+// ── Team folder routes ──────────────────────────
+
+app.get("/api/teams/:teamId/folders", authMiddleware, (req, res) => {
+  const { teamId } = req.params;
+  const membership = queryOne("SELECT * FROM team_members WHERE team_id = ? AND user_id = ?", [teamId, req.userId]);
+  if (!membership) return res.status(403).json({ error: "Not a team member" });
+
+  const rows = queryAll(
+    "SELECT id, name, created_at AS createdAt FROM team_folders WHERE team_id = ?",
+    [teamId]
+  );
+  res.json(rows);
+});
+
+app.post("/api/teams/:teamId/folders", authMiddleware, (req, res) => {
+  const { teamId } = req.params;
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ error: "Folder name required" });
+
+  const membership = queryOne("SELECT * FROM team_members WHERE team_id = ? AND user_id = ?", [teamId, req.userId]);
+  if (!membership) return res.status(403).json({ error: "Not a team member" });
+
+  const id = crypto.randomUUID();
+  db.run("INSERT INTO team_folders (id, team_id, name, created_by) VALUES (?, ?, ?, ?)", [id, teamId, name, req.userId]);
+  persist();
+  res.json({ id, name });
+});
+
+app.put("/api/teams/:teamId/folders/:folderId", authMiddleware, (req, res) => {
+  const { teamId, folderId } = req.params;
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ error: "Folder name required" });
+
+  const membership = queryOne("SELECT * FROM team_members WHERE team_id = ? AND user_id = ?", [teamId, req.userId]);
+  if (!membership) return res.status(403).json({ error: "Not a team member" });
+
+  db.run("UPDATE team_folders SET name = ? WHERE id = ? AND team_id = ?", [name, folderId, teamId]);
+  persist();
+  res.json({ ok: true });
+});
+
+app.delete("/api/teams/:teamId/folders/:folderId", authMiddleware, (req, res) => {
+  const { teamId, folderId } = req.params;
+  const membership = queryOne("SELECT * FROM team_members WHERE team_id = ? AND user_id = ?", [teamId, req.userId]);
+  if (!membership) return res.status(403).json({ error: "Not a team member" });
+
+  db.run("UPDATE team_snippets SET folder_id = NULL WHERE folder_id = ? AND team_id = ?", [folderId, teamId]);
+  db.run("DELETE FROM team_folders WHERE id = ? AND team_id = ?", [folderId, teamId]);
+  persist();
+  res.json({ ok: true });
+});
+
 // ── Team snippet routes ──────────────────────────
 
 // Get all team snippets
@@ -446,6 +560,7 @@ app.get("/api/teams/:teamId/snippets", authMiddleware, (req, res) => {
 
   const rows = queryAll(`
     SELECT ts.id, ts.name, ts.shortcut, ts.html, ts.text_content AS text,
+           ts.folder_id AS folderId,
            ts.created_at AS createdAt, ts.updated_at AS updatedAt,
            u.email AS createdByEmail
     FROM team_snippets ts
@@ -458,7 +573,7 @@ app.get("/api/teams/:teamId/snippets", authMiddleware, (req, res) => {
 // Create / update a team snippet
 app.put("/api/teams/:teamId/snippets", authMiddleware, (req, res) => {
   const { teamId } = req.params;
-  const { id, name, shortcut, html, text, createdAt, updatedAt } = req.body;
+  const { id, name, shortcut, html, text, folderId, createdAt, updatedAt } = req.body;
   if (!id || !name || !shortcut) return res.status(400).json({ error: "Missing fields" });
 
   const membership = queryOne(
@@ -471,13 +586,13 @@ app.put("/api/teams/:teamId/snippets", authMiddleware, (req, res) => {
 
   if (existing) {
     db.run(
-      "UPDATE team_snippets SET name = ?, shortcut = ?, html = ?, text_content = ?, updated_at = ?, deleted = 0 WHERE id = ? AND team_id = ?",
-      [name, shortcut, html || "", text || "", updatedAt, id, teamId]
+      "UPDATE team_snippets SET name = ?, shortcut = ?, html = ?, text_content = ?, folder_id = ?, updated_at = ?, deleted = 0 WHERE id = ? AND team_id = ?",
+      [name, shortcut, html || "", text || "", folderId || null, updatedAt, id, teamId]
     );
   } else {
     db.run(
-      "INSERT INTO team_snippets (id, team_id, created_by, name, shortcut, html, text_content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [id, teamId, req.userId, name, shortcut, html || "", text || "", createdAt, updatedAt]
+      "INSERT INTO team_snippets (id, team_id, created_by, name, shortcut, html, text_content, folder_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [id, teamId, req.userId, name, shortcut, html || "", text || "", folderId || null, createdAt, updatedAt]
     );
   }
 
