@@ -8,10 +8,18 @@ const initSqlJs = require("sql.js");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { Resend } = require("resend");
+const nodemailer = require("nodemailer");
 
 const app = express();
-const resend = new Resend(process.env.RESEND_API_KEY || "re_test_key");
+
+// Gmail SMTP transport
+const mailTransport = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.GMAIL_USER,       // e.g. danielk@getsquire.com
+    pass: process.env.GMAIL_APP_PASSWORD // 16-char app password from Google
+  }
+});
 const PORT = process.env.PORT || 3456;
 
 // Health check — registered early so it always responds
@@ -228,12 +236,11 @@ app.post("/api/auth/forgot-password", async (req, res) => {
   );
   persist();
 
-  // Send the email via Resend
-  const fromAddress = process.env.RESEND_FROM_EMAIL || "Snippet Expander <onboarding@resend.dev>";
+  // Send the email via Gmail SMTP
   try {
-    await resend.emails.send({
-      from: fromAddress,
-      to: [user.email],
+    await mailTransport.sendMail({
+      from: process.env.GMAIL_USER || "noreply@example.com",
+      to: user.email,
       subject: "Your Snippet Expander password reset code",
       html: `
         <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto;">
