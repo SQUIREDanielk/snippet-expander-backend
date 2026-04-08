@@ -14,11 +14,16 @@ const app = express();
 
 // Gmail SMTP transport
 const mailTransport = nodemailer.createTransport({
-  service: "gmail",
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true,
   auth: {
     user: process.env.GMAIL_USER,       // e.g. danielk@getsquire.com
     pass: process.env.GMAIL_APP_PASSWORD // 16-char app password from Google
-  }
+  },
+  connectionTimeout: 10000,  // 10 seconds
+  greetingTimeout: 10000,
+  socketTimeout: 10000,
 });
 const PORT = process.env.PORT || 3456;
 
