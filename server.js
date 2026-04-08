@@ -12,18 +12,19 @@ const nodemailer = require("nodemailer");
 
 const app = express();
 
-// Gmail SMTP transport
+// Gmail SMTP transport — use port 587 + STARTTLS (port 465 is blocked on Railway)
 const mailTransport = nodemailer.createTransport({
   host: "smtp.gmail.com",
-  port: 465,
-  secure: true,
+  port: 587,
+  secure: false,           // false = use STARTTLS upgrade
   auth: {
     user: process.env.GMAIL_USER,       // e.g. danielk@getsquire.com
     pass: process.env.GMAIL_APP_PASSWORD // 16-char app password from Google
   },
-  connectionTimeout: 10000,  // 10 seconds
-  greetingTimeout: 10000,
-  socketTimeout: 10000,
+  requireTLS: true,        // enforce TLS upgrade (still encrypted)
+  connectionTimeout: 15000,
+  greetingTimeout: 15000,
+  socketTimeout: 15000,
 });
 const PORT = process.env.PORT || 3456;
 
