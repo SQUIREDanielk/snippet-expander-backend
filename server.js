@@ -8,24 +8,8 @@ const initSqlJs = require("sql.js");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const nodemailer = require("nodemailer");
 
 const app = express();
-
-// Gmail SMTP transport — use port 587 + STARTTLS (port 465 is blocked on Railway)
-const mailTransport = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 587,
-  secure: false,           // false = use STARTTLS upgrade
-  auth: {
-    user: process.env.GMAIL_USER,       // e.g. danielk@getsquire.com
-    pass: process.env.GMAIL_APP_PASSWORD // 16-char app password from Google
-  },
-  requireTLS: true,        // enforce TLS upgrade (still encrypted)
-  connectionTimeout: 15000,
-  greetingTimeout: 15000,
-  socketTimeout: 15000,
-});
 const PORT = process.env.PORT || 3456;
 
 // Health check — registered early so it always responds
@@ -245,32 +229,10 @@ app.post("/api/auth/forgot-password", async (req, res) => {
   );
   persist();
 
-  // Send the email via Gmail SMTP
-  try {
-    await mailTransport.sendMail({
-      from: process.env.GMAIL_USER || "noreply@example.com",
-      to: user.email,
-      subject: "Your Snippet Expander password reset code",
-      html: `
-        <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto;">
-          <h2 style="color: #4f46e5;">Password Reset</h2>
-          <p>You requested a password reset for your Snippet Expander account.</p>
-          <p>Your reset code is:</p>
-          <div style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #4f46e5; background: #f3f4f6; padding: 16px; border-radius: 8px; text-align: center; margin: 16px 0;">
-            ${code}
-          </div>
-          <p>This code expires in <strong>15 minutes</strong>.</p>
-          <p style="color: #6b7280; font-size: 13px;">If you didn't request this, you can safely ignore this email.</p>
-        </div>
-      `,
-    });
-    console.log(`Password reset code sent to ${user.email}`);
-  } catch (err) {
-    console.error("Failed to send reset email:", err);
-    return res.status(500).json({ error: "Failed to send reset email. Please try again." });
-  }
+  console.log(`Password reset code generated for ${user.email}`);
 
-  res.json({ ok: true, message: "If that email exists, a reset code has been sent." });
+  // Return code directly (internal tool — no email needed)
+  res.json({ ok: true, code, message: "Use this code to reset your password." });
 });
 
 // Verify code and set new password
